@@ -1,3 +1,4 @@
+
 import { Player, Enemy, Projectile, Particle, XpGem, WORLD_SIZE } from './entities';
 import { audioService } from '../services/audioService';
 import { HUDState } from '../types';
@@ -77,11 +78,10 @@ export class GameEngine {
             this.spawnEnemy();
         }
 
-        // Camera
+        // Camera logic
         let targetCamX = this.player.x - canvasWidth / 2;
         let targetCamY = this.player.y - canvasHeight / 2;
 
-        // Shake
         let shakeX = (Math.random() - 0.5) * this.camera.shake;
         let shakeY = (Math.random() - 0.5) * this.camera.shake;
         this.camera.shake *= 0.9;
@@ -89,14 +89,19 @@ export class GameEngine {
         this.camera.x += (targetCamX - this.camera.x) * 0.1;
         this.camera.y += (targetCamY - this.camera.y) * 0.1;
 
-        // Mouse World Coords
         this.mouse.wx = this.mouse.x + this.camera.x;
         this.mouse.wy = this.mouse.y + this.camera.y;
 
-        // Updates
+        // Player Update & Boost Logic
         this.player.update(this.keys, this.mouse);
         
-        // Remove dead entities
+        // Score Drain for Boost
+        if (this.player.isBoosting && this.frame % 5 === 0) {
+            if (this.score > 0) this.score--;
+            else this.player.setBoost(false); // Disable boost if no score
+        }
+        
+        // Clean up entities
         this.projectiles = this.projectiles.filter(p => p.life > 0);
         this.projectiles.forEach(p => p.update(this.enemies));
         
@@ -109,15 +114,13 @@ export class GameEngine {
         this.enemies.forEach((e, i) => {
             e.update(this.player, this.enemies);
             
-            // Player-Enemy Collision
             const d = Math.hypot(this.player.x - e.x, this.player.y - e.y);
             if (d < this.player.r + e.r) {
                 if (this.player.isDashing) {
-                    e.hp -= 50; // Ram damage
+                    e.hp -= 50; 
                     this.addDamageText(e.x, e.y, "50", "#fff");
                 } else if (this.player.shieldHp > 0) {
                     this.player.shieldHp -= 1;
-                    // Knockback
                     const angle = Math.atan2(e.y - this.player.y, e.x - this.player.x);
                     e.x += Math.cos(angle) * 20;
                     e.y += Math.sin(angle) * 20;
@@ -127,13 +130,12 @@ export class GameEngine {
                 }
             }
 
-            // Projectile-Enemy Collision
             this.projectiles.forEach(p => {
                 if (p.life <= 0) return;
                 const pd = Math.hypot(p.x - e.x, p.y - e.y);
                 if (pd < e.r + 5) {
                     e.hp -= p.dmg;
-                    p.life = 0; // Destroy bullet
+                    p.life = 0;
                     this.addDamageText(e.x, e.y, Math.floor(p.dmg).toString());
                     for (let k = 0; k < 3; k++) this.particles.push(new Particle(p.x, p.y, e.color, 3));
                 }
@@ -171,30 +173,24 @@ export class GameEngine {
     }
 
     draw(ctx: CanvasRenderingContext2D, width: number, height: number) {
-        // Clear
         ctx.fillStyle = '#050505';
         ctx.fillRect(0, 0, width, height);
 
         ctx.save();
-        // Shake application
         const sx = (Math.random() - 0.5) * this.camera.shake;
         const sy = (Math.random() - 0.5) * this.camera.shake;
         ctx.translate(-this.camera.x + sx, -this.camera.y + sy);
 
-        // World Border
         ctx.strokeStyle = '#ff0000';
         ctx.lineWidth = 2;
         ctx.strokeRect(0, 0, this.world.w, this.world.h);
 
-        // Stars
         this.stars.forEach(s => {
             ctx.fillStyle = `rgba(255, 255, 255, ${Math.random()})`;
             let px = (s.x - this.camera.x * s.parallax);
             let py = (s.y - this.camera.y * s.parallax);
-            // Tile logic
             px = ((px % this.world.w) + this.world.w) % this.world.w;
             py = ((py % this.world.h) + this.world.h) % this.world.h;
-            
             ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2); ctx.fill();
         });
 
@@ -203,14 +199,11 @@ export class GameEngine {
         this.projectiles.forEach(p => p.draw(ctx));
         this.enemies.forEach(e => e.draw(ctx));
         this.particles.forEach(p => p.draw(ctx));
-        
-        // Damage Texts
         this.drawTexts(ctx);
 
         ctx.restore();
     }
 
-    // Text System
     texts: { x: number, y: number, text: string, color: string, life: number, vy: number }[] = [];
     addDamageText(x: number, y: number, text: string, color: string = '#fff') {
         this.texts.push({ x, y, text, color, life: 30, vy: -2 });
@@ -228,7 +221,6 @@ export class GameEngine {
         });
     }
 
-    // Minimap Helper
     drawMinimap(ctx: CanvasRenderingContext2D) {
         ctx.fillStyle = '#001';
         ctx.fillRect(0, 0, 150, 150);
@@ -236,19 +228,16 @@ export class GameEngine {
         const scaleX = 150 / this.world.w;
         const scaleY = 150 / this.world.h;
 
-        // Enemies
         ctx.fillStyle = 'red';
         this.enemies.forEach(e => {
             ctx.fillRect(e.x * scaleX - 1, e.y * scaleY - 1, 2, 2);
         });
 
-        // Gems
         ctx.fillStyle = 'yellow';
         this.xpGems.forEach(g => {
             ctx.fillRect(g.x * scaleX, g.y * scaleY, 1, 1);
         });
 
-        // Player
         ctx.fillStyle = '#00d2ff';
         ctx.beginPath();
         ctx.arc(this.player.x * scaleX, this.player.y * scaleY, 3, 0, Math.PI * 2);

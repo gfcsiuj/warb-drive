@@ -1,3 +1,4 @@
+
 import { audioService } from '../services/audioService';
 
 export const WORLD_SIZE = 3000;
@@ -257,6 +258,7 @@ export class Player {
     dashCd: number = 0;
     maxDashCd: number = 60;
     isDashing: boolean = false;
+    isBoosting: boolean = false; // New boost state
 
     shieldHp: number = 0;
     shieldCd: number = 0;
@@ -276,6 +278,10 @@ export class Player {
         this.addParticle = addPart;
     }
 
+    setBoost(active: boolean) {
+        this.isBoosting = active;
+    }
+
     update(keys: { w: boolean, a: boolean, s: boolean, d: boolean }, mouse: { wx: number, wy: number, down: boolean }) {
         // Regen
         if (this.hp < this.maxHp) this.hp += this.regen;
@@ -287,14 +293,23 @@ export class Player {
         if (keys.a) this.vel.x -= 1;
         if (keys.d) this.vel.x += 1;
 
+        let currentSpeed = this.speed;
+        if (this.isBoosting) {
+            currentSpeed *= 1.5; // 50% faster
+            // Add visual trail for boost
+            if (Math.random() > 0.5) {
+                this.addParticle(new Particle(this.x, this.y, 'orange', 5, 3));
+            }
+        }
+
         if (this.isDashing) {
             this.vel.x *= 1.1; 
             this.vel.y *= 1.1;
         } else {
             const mag = Math.hypot(this.vel.x, this.vel.y);
-            if (mag > this.speed) {
-                this.vel.x = (this.vel.x / mag) * this.speed;
-                this.vel.y = (this.vel.y / mag) * this.speed;
+            if (mag > currentSpeed) {
+                this.vel.x = (this.vel.x / mag) * currentSpeed;
+                this.vel.y = (this.vel.y / mag) * currentSpeed;
             }
             this.vel.x *= this.friction;
             this.vel.y *= this.friction;
@@ -410,8 +425,8 @@ export class Player {
 
         // Ship
         ctx.shadowBlur = 20;
-        ctx.shadowColor = this.isDashing ? '#fff' : '#00d2ff';
-        ctx.fillStyle = this.isDashing ? '#fff' : '#00d2ff';
+        ctx.shadowColor = this.isBoosting ? 'orange' : (this.isDashing ? '#fff' : '#00d2ff');
+        ctx.fillStyle = this.isBoosting ? '#ffaa00' : (this.isDashing ? '#fff' : '#00d2ff');
         
         ctx.beginPath();
         ctx.moveTo(20, 0);
