@@ -261,4 +261,7 @@ export class GameEngine {
             this.camera.shake = 10;
         }
     }
+    triggerShield() {
+        this.player.activateShield();
+    }
 }

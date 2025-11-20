@@ -1,6 +1,6 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+import { FilesetResolver, HandLandmarker, FaceLandmarker } from '@mediapipe/tasks-vision';
 import { GameEngine } from '../game/engine';
 import { GameSettings } from '../types';
 
@@ -34,8 +34,11 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
     // UI State for Visual Feedback
     const [isMoving, setIsMoving] = useState(false);
     const [isFiring, setIsFiring] = useState(false);
+    const [statusMessage, setStatusMessage] = useState<string>('');
     
     const landmarkerRef = useRef<HandLandmarker | null>(null);
+    const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+    
     const requestRef = useRef<number>(0);
     const lastVideoTimeRef = useRef<number>(-1);
     const lastPredictionTimeRef = useRef<number>(0);
@@ -47,8 +50,9 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
     // Debounce for special actions to prevent spamming
     const lastDashRef = useRef(0);
     const lastNukeRef = useRef(0);
+    const lastShieldRef = useRef(0);
 
-    // Update Refs when props change to avoid stale closures in the loop
+    // Update Refs when props change
     useEffect(() => {
         engineRef.current = gameEngine;
     }, [gameEngine]);
@@ -62,14 +66,15 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
 
         const setup = async () => {
             try {
-                if (onInitStatus) onInitStatus("INITIALIZING NEURAL CORE...", false);
+                if (onInitStatus) onInitStatus("INITIALIZING VISION CORE...", false);
 
                 const vision = await FilesetResolver.forVisionTasks(
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
                 );
                 
-                if (onInitStatus) onInitStatus("LOADING VISION MODELS...", false);
+                if (onInitStatus) onInitStatus("LOADING MODELS...", false);
 
+                // Load Hand Model
                 const landmarker = await HandLandmarker.createFromOptions(vision, {
                     baseOptions: {
                         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
@@ -83,7 +88,22 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                 });
                 landmarkerRef.current = landmarker;
 
-                if (onInitStatus) onInitStatus("ESTABLISHING OPTICAL LINK...", false);
+                // Load Face Model (for blinking)
+                const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numFaces: 1,
+                    minFaceDetectionConfidence: 0.5,
+                    minFacePresenceConfidence: 0.5,
+                    minTrackingConfidence: 0.5,
+                    outputFaceBlendshapes: true
+                });
+                faceLandmarkerRef.current = faceLandmarker;
+
+                if (onInitStatus) onInitStatus("ESTABLISHING NEURAL LINK...", false);
 
                 stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { 
@@ -123,6 +143,7 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
         return () => {
             if (stream) stream.getTracks().forEach(t => t.stop());
             if (landmarkerRef.current) landmarkerRef.current.close();
+            if (faceLandmarkerRef.current) faceLandmarkerRef.current.close();
             if (requestRef.current) cancelAnimationFrame(requestRef.current);
         };
     }, []);
@@ -130,7 +151,7 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
     const predict = () => {
         requestRef.current = requestAnimationFrame(predict);
 
-        if (!landmarkerRef.current || !videoRef.current || !canvasRef.current) return;
+        if (!landmarkerRef.current || !faceLandmarkerRef.current || !videoRef.current || !canvasRef.current) return;
 
         const currentSettings = settingsRef.current;
         const now = performance.now();
@@ -148,7 +169,9 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
 
         if (video.currentTime !== lastVideoTimeRef.current) {
             lastVideoTimeRef.current = video.currentTime;
-            const results = landmarkerRef.current.detectForVideo(video, now);
+            
+            const handResults = landmarkerRef.current.detectForVideo(video, now);
+            const faceResults = faceLandmarkerRef.current.detectForVideo(video, now);
 
             // OPTIMIZATION: Skip clearing and drawing if camera is hidden
             if (currentSettings.showCamera) {
@@ -158,31 +181,51 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
             // Reset Inputs
             let moving = false;
             let firing = false;
-            let boosting = false;
+            let activeMessage = '';
             
+            // Logic states
+            let leftFist = false;
+            let rightFist = false;
+
             if (engineRef.current) {
                 const k = engineRef.current.keys;
                 k.w = false; k.a = false; k.s = false; k.d = false;
-                // Default boost off unless detected
                 engineRef.current.player.setBoost(false);
             }
 
-            if (results.landmarks && results.landmarks.length > 0) {
-                for (let i = 0; i < results.landmarks.length; i++) {
-                    const landmarks = results.landmarks[i];
-                    const handedness = results.handedness[i][0];
-                    const category = handedness.categoryName; // "Left" or "Right"
+            // --- FACE LOGIC (DASH) ---
+            if (faceResults.faceBlendshapes && faceResults.faceBlendshapes.length > 0) {
+                const categories = faceResults.faceBlendshapes[0].categories;
+                const eyeBlinkLeft = categories.find(c => c.categoryName === 'eyeBlinkLeft')?.score || 0;
+                const eyeBlinkRight = categories.find(c => c.categoryName === 'eyeBlinkRight')?.score || 0;
+
+                if (eyeBlinkLeft > 0.6 && eyeBlinkRight > 0.6) {
+                    activeMessage = "EYES CLOSED - DASH";
+                    if (engineRef.current && now - lastDashRef.current > 1000) {
+                        engineRef.current.triggerDash();
+                        lastDashRef.current = now;
+                    }
+                }
+            }
+
+            // --- HAND LOGIC ---
+            if (handResults.landmarks && handResults.landmarks.length > 0) {
+                for (let i = 0; i < handResults.landmarks.length; i++) {
+                    const landmarks = handResults.landmarks[i];
+                    const handedness = handResults.handedness[i][0];
+                    const category = handedness.categoryName; // "Left" or "Right" (MediaPipe is usually mirrored)
                     const wrist = landmarks[0];
 
-                    // Helpers for Gesture Detection
-                    // Check if fingertip is close to wrist (curled)
+                    // Helpers
                     const isCurled = (idx: number) => distSq(landmarks[idx], wrist) < 0.03;
-                    const isThumbTucked = distSq(landmarks[4], landmarks[13]) < 0.02; // Thumb Tip near Ring MCP
+                    
+                    // Detect Fist (All fingers curled)
+                    const isFist = isCurled(8) && isCurled(12) && isCurled(16) && isCurled(20);
+                    if (category === 'Left' && isFist) leftFist = true;
+                    if (category === 'Right' && isFist) rightFist = true;
 
-                    // --- RIGHT HAND: Move, Aim, Boost, Dash ---
+                    // --- RIGHT HAND: Move & Aim ---
                     if (category === 'Right' && engineRef.current) {
-                        
-                        // 1. MOVEMENT & AIM
                         const trackIdx = currentSettings.trackingMode === 'index' ? 8 : 0;
                         const trackPoint = landmarks[trackIdx];
                         const visualX = 1 - trackPoint.x; 
@@ -208,17 +251,9 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                             targetMouseRef.current.y = (window.innerHeight / 2) + (ny * aimDistance);
                         }
 
-                        // 2. BOOST (Fist Clench: All fingers curled)
-                        const fingersCurled = isCurled(8) && isCurled(12) && isCurled(16) && isCurled(20);
-                        if (fingersCurled) {
+                        // Boost on Fist (Right hand only)
+                        if (isFist) {
                             engineRef.current.player.setBoost(true);
-                            boosting = true;
-                        }
-
-                        // 3. DASH (Thumb Tuck)
-                        if (isThumbTucked && now - lastDashRef.current > 1000) {
-                            engineRef.current.triggerDash();
-                            lastDashRef.current = now;
                         }
 
                         // Visuals
@@ -228,7 +263,7 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                             
                             ctx.beginPath();
                             ctx.arc(cx, cy, 6, 0, Math.PI * 2);
-                            ctx.fillStyle = boosting ? '#ff4400' : (moving ? '#ffaa00' : 'rgba(255, 255, 255, 0.5)');
+                            ctx.fillStyle = moving ? '#ffaa00' : 'rgba(255, 255, 255, 0.5)';
                             ctx.fill();
 
                             if (moving) {
@@ -236,48 +271,63 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                                 const zoneCenterX = zoneRawX * canvas.width;
                                 const zoneCenterY = MOVE_ZONE_CENTER.y * canvas.height;
                                 ctx.beginPath(); ctx.moveTo(zoneCenterX, zoneCenterY); ctx.lineTo(cx, cy);
-                                ctx.strokeStyle = boosting ? 'rgba(255, 68, 0, 0.8)' : 'rgba(255, 170, 0, 0.6)';
+                                ctx.strokeStyle = 'rgba(255, 170, 0, 0.6)';
                                 ctx.lineWidth = 2; ctx.stroke();
                             }
                         }
                     }
 
-                    // --- LEFT HAND: Fire, Nuke ---
+                    // --- LEFT HAND: Fire & Shield (Back of hand) ---
                     if (category === 'Left' && engineRef.current) {
-                         // 1. FIRE (Fist Clench)
-                         const clench = isCurled(12) && isCurled(16) && isCurled(20); // Index (8) usually used for pointing, check others
-                         engineRef.current.mouse.down = clench;
-                         if (clench) firing = true;
+                        // Fire on Fist (simultaneous with boost logic for logic consistency)
+                        if (isFist) {
+                            engineRef.current.mouse.down = true;
+                            firing = true;
+                        }
 
-                         // 2. NUKE (Thumb Tuck)
-                         if (isThumbTucked && now - lastNukeRef.current > 2000) {
-                             engineRef.current.triggerNuke();
-                             lastNukeRef.current = now;
-                         }
+                        // SHIELD: Detect "Back of Hand"
+                        // Normal "Palm Open" Left Hand facing camera: Thumb (4) is to the RIGHT of Pinky (20) (Higher X)
+                        // "Back of Hand" Facing camera: Thumb (4) is to the LEFT of Pinky (20) (Lower X)
+                        // Note: MediaPipe X is 0..1 from Left to Right.
+                        // Let's verify:
+                        // User Left Hand, Palm to Cam: [Pinky] .. [Thumb] -> Pinky.x < Thumb.x
+                        // User Left Hand, Back to Cam: [Thumb] .. [Pinky] -> Thumb.x < Pinky.x
+                        const thumbX = landmarks[4].x;
+                        const pinkyX = landmarks[20].x;
+                        const isBackOfHand = thumbX < pinkyX;
 
-                         if (currentSettings.showCamera) {
-                             const cx = landmarks[8].x * canvas.width;
-                             const cy = landmarks[8].y * canvas.height;
-                             if (clench) {
-                                 ctx.strokeStyle = '#ff0000';
-                                 ctx.lineWidth = 4;
-                                 ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI*2); ctx.stroke();
-                                 ctx.fillStyle = 'rgba(255, 0, 0, 0.3)'; ctx.fill();
-                             } else {
-                                 ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)';
-                                 ctx.lineWidth = 1;
-                                 ctx.beginPath();
-                                 ctx.moveTo(cx - 5, cy); ctx.lineTo(cx + 5, cy);
-                                 ctx.moveTo(cx, cy - 5); ctx.lineTo(cx, cy + 5);
-                                 ctx.stroke();
+                        if (isBackOfHand && !leftFist) { // Don't shield if trying to fist/nuke
+                             activeMessage = "BACKHAND - SHIELD";
+                             if (now - lastShieldRef.current > 1000) {
+                                 engineRef.current.triggerShield();
+                                 lastShieldRef.current = now;
                              }
-                         }
+                        }
+
+                        if (currentSettings.showCamera) {
+                            const cx = landmarks[8].x * canvas.width;
+                            const cy = landmarks[8].y * canvas.height;
+                            if (isBackOfHand && !isFist) {
+                                ctx.fillStyle = 'cyan';
+                                ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI*2); ctx.fill();
+                            }
+                        }
                     }
                 }
             } else {
                 if (engineRef.current) engineRef.current.mouse.down = false;
             }
-            
+
+            // --- NUKE (DUAL FIST) ---
+            if (leftFist && rightFist) {
+                activeMessage = "DUAL CORE - NUKE";
+                if (engineRef.current && now - lastNukeRef.current > 2000) {
+                    engineRef.current.triggerNuke();
+                    lastNukeRef.current = now;
+                }
+            }
+
+            setStatusMessage(activeMessage);
             setIsMoving(moving);
             setIsFiring(firing);
         }
@@ -315,6 +365,7 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                     height={240}
                 />
                 
+                {/* Movement Guide Circle */}
                 <div 
                     className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full flex items-center justify-center pointer-events-none transition-all duration-200 ${isMoving ? 'border-orange-400 bg-orange-500/20 shadow-[0_0_15px_rgba(255,165,0,0.5)]' : 'border-orange-500/30'}`}
                     style={{ 
@@ -331,6 +382,15 @@ const HandControl: React.FC<Props> = ({ gameEngine, onInitStatus, settings }) =>
                 <div className="text-[8px] font-bold text-cyan-400 tracking-widest">NEURAL LINK</div>
                 <div className={`w-2 h-2 rounded-full ${isConnecting ? 'bg-red-500' : 'bg-green-500'} animate-pulse`}></div>
             </div>
+            
+            {/* Gestures Status Overlay */}
+            {statusMessage && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none z-50">
+                    <div className="text-xs font-black text-white bg-red-600/80 px-2 py-1 rounded animate-pulse whitespace-nowrap">
+                        {statusMessage}
+                    </div>
+                </div>
+            )}
             
             <div className="absolute bottom-1 left-0 w-full flex justify-between px-4 text-[9px] font-bold text-gray-500 uppercase tracking-wider">
                 <span className={isFiring ? 'text-red-400' : ''}>Fire</span>
