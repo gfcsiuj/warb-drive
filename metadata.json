@@ -1,0 +1,7 @@
+{
+  "name": "Warp Drive: Ultimate",
+  "description": "A fast-paced roguelite space shooter where you pilot a ship, destroy waves of enemies, collect XP, and upgrade your systems to survive.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
