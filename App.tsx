@@ -13,7 +13,8 @@ const DEFAULT_SETTINGS: GameSettings = {
     sensitivity: 0.1,   // Default smoothing
     showCamera: true,
     highPerformance: false, // Default to 30fps for safety
-    trackingMode: 'index' // Default to index finger tip
+    trackingMode: 'index', // Default to index finger tip
+    controlMode: 'KEYBOARD' // Default logic, though overridden by selection
 };
 
 const App: React.FC = () => {
@@ -27,15 +28,36 @@ const App: React.FC = () => {
     
     const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
 
-    // Loading / System State
+    // System State
+    const [hasSelectedMode, setHasSelectedMode] = useState(false);
     const [isSystemReady, setSystemReady] = useState(false);
     const [loadingStatus, setLoadingStatus] = useState("BOOT SEQUENCE INITIATED...");
+    
+    // Track where we came from to support 'Back' in Settings
+    const [previousState, setPreviousState] = useState<GameState>(GameState.MENU);
 
     // Input Handling
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (!engineRef.current) return;
             const k = e.code;
+
+            // Global Esc Handling
+            if (k === 'Escape') {
+                if (gameState === GameState.PLAYING) {
+                    setGameState(GameState.PAUSE_MENU);
+                    return;
+                }
+                if (gameState === GameState.PAUSE_MENU) {
+                    setGameState(GameState.PLAYING);
+                    return;
+                }
+                if (gameState === GameState.SETTINGS) {
+                    setGameState(previousState);
+                    return;
+                }
+            }
+
+            if (!engineRef.current) return;
             const keys = engineRef.current.keys;
             
             if (k === 'KeyW' || k === 'ArrowUp') keys.w = true;
@@ -43,13 +65,16 @@ const App: React.FC = () => {
             if (k === 'KeyS' || k === 'ArrowDown') keys.s = true;
             if (k === 'KeyD' || k === 'ArrowRight') keys.d = true;
             
+            // Shift Boost
+            if (e.shiftKey) {
+                engineRef.current.player.setBoost(true);
+            }
+
             if (gameState === GameState.PLAYING) {
                 if (k === 'Space') engineRef.current.triggerDash();
                 if (k === 'KeyQ') engineRef.current.player.activateShield();
                 if (k === 'KeyE') engineRef.current.triggerNuke();
             }
-            
-            // Esc to pause or open menu could be added here
         };
 
         const handleKeyUp = (e: KeyboardEvent) => {
@@ -60,6 +85,10 @@ const App: React.FC = () => {
             if (k === 'KeyA' || k === 'ArrowLeft') keys.a = false;
             if (k === 'KeyS' || k === 'ArrowDown') keys.s = false;
             if (k === 'KeyD' || k === 'ArrowRight') keys.d = false;
+
+            if (k === 'ShiftLeft' || k === 'ShiftRight') {
+                engineRef.current.player.setBoost(false);
+            }
         };
 
         const handleMouseMove = (e: MouseEvent) => {
@@ -89,7 +118,7 @@ const App: React.FC = () => {
             window.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [gameState]);
+    }, [gameState, previousState]);
 
     // Game Loop
     const loop = () => {
@@ -130,25 +159,94 @@ const App: React.FC = () => {
         setGameState(GameState.PLAYING);
     };
 
+    const selectMode = (mode: 'KEYBOARD' | 'CAMERA') => {
+        setSettings(prev => ({ 
+            ...prev, 
+            controlMode: mode,
+            showCamera: mode === 'CAMERA' 
+        }));
+        setHasSelectedMode(true);
+
+        if (mode === 'KEYBOARD') {
+            // Skip loading
+            setSystemReady(true);
+        } else {
+            // Reset ready state to wait for camera load
+            setSystemReady(false);
+        }
+    };
+
     return (
         <div className="w-screen h-screen bg-black relative overflow-hidden">
             <canvas ref={canvasRef} className="block" />
 
-            {/* Hand Control System - Passed settings */}
-            <HandControl 
-                gameEngine={engineRef.current} 
-                settings={settings}
-                onInitStatus={(msg, ready) => {
-                    setLoadingStatus(msg);
-                    if (ready) {
-                        setTimeout(() => setSystemReady(true), 800);
-                    }
-                }}
-            />
+            {/* MODE SELECTION SCREEN - INITIAL VIEW */}
+            {!hasSelectedMode && (
+                 <div className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black animate-in fade-in duration-500">
+                    <div className="mb-12 text-center">
+                        <h1 className="text-6xl md:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 drop-shadow-[0_0_30px_rgba(0,210,255,0.6)] tracking-tighter">
+                            WARP DRIVE
+                        </h1>
+                        <p className="text-cyan-600 tracking-[0.5em] mt-2 text-sm">SYSTEM BOOT // SELECT INPUT PROTOCOL</p>
+                    </div>
 
-            {/* BOOT LOADING SCREEN */}
-            {!isSystemReady && (
-                <div className="absolute inset-0 z-[100] bg-black flex flex-col items-center justify-center text-center p-8">
+                    <div className="flex flex-col md:flex-row gap-8 items-center justify-center">
+                        {/* STANDARD MODE BUTTON */}
+                        <button 
+                            onClick={() => selectMode('KEYBOARD')}
+                            className="group relative w-72 h-80 bg-gray-900 border border-gray-700 hover:border-cyan-400 rounded-xl p-6 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_0_30px_rgba(0,210,255,0.3)]"
+                        >
+                            <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mb-6 group-hover:bg-cyan-900 transition-colors">
+                                <svg className="w-10 h-10 text-gray-400 group-hover:text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                                </svg>
+                            </div>
+                            <h3 className="text-2xl font-bold text-white mb-2 group-hover:text-cyan-400">STANDARD</h3>
+                            <p className="text-gray-500 text-center text-sm leading-relaxed">
+                                Mouse & Keyboard Controls.<br/>Classic arcade experience.
+                            </p>
+                        </button>
+
+                        {/* CAMERA MODE BUTTON */}
+                        <button 
+                            onClick={() => selectMode('CAMERA')}
+                            className="group relative w-72 h-80 bg-gray-900 border border-gray-700 hover:border-orange-500 rounded-xl p-6 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_0_30px_rgba(255,165,0,0.3)]"
+                        >
+                             <div className="absolute top-4 right-4 px-2 py-1 bg-orange-900/50 border border-orange-500/30 rounded text-[10px] font-bold text-orange-400 animate-pulse">
+                                EXPERIMENTAL
+                            </div>
+                            <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mb-6 group-hover:bg-orange-900 transition-colors">
+                                <svg className="w-10 h-10 text-gray-400 group-hover:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                            </div>
+                            <h3 className="text-2xl font-bold text-white mb-2 group-hover:text-orange-400">NEURAL CAM</h3>
+                            <p className="text-gray-500 text-center text-sm leading-relaxed">
+                                Motion Controls via Camera.<br/>Use hands & face to play.
+                            </p>
+                        </button>
+                    </div>
+                 </div>
+            )}
+
+            {/* Hand Control System - Only loads if Camera Mode selected */}
+            {hasSelectedMode && settings.controlMode === 'CAMERA' && (
+                <HandControl 
+                    gameEngine={engineRef.current} 
+                    settings={settings}
+                    onInitStatus={(msg, ready) => {
+                        setLoadingStatus(msg);
+                        if (ready) {
+                            setTimeout(() => setSystemReady(true), 800);
+                        }
+                    }}
+                />
+            )}
+
+            {/* BOOT LOADING SCREEN - Only shows for Camera Mode or if system not ready */}
+            {hasSelectedMode && !isSystemReady && (
+                <div className="absolute inset-0 z-[90] bg-black flex flex-col items-center justify-center text-center p-8">
                     <div className="w-24 h-24 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mb-8 shadow-[0_0_30px_rgba(0,210,255,0.4)]"></div>
                     <h1 className="text-4xl md:text-6xl font-black text-white mb-4 tracking-widest">WARP DRIVE</h1>
                     <div className="font-mono text-cyan-400 text-lg md:text-xl tracking-[0.2em] animate-pulse uppercase">
@@ -165,8 +263,38 @@ const App: React.FC = () => {
                 <HUD state={hudState} gameEngine={engineRef.current} />
             )}
 
+            {/* Pause Menu */}
+            {gameState === GameState.PAUSE_MENU && (
+                <div className="absolute inset-0 z-[80] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                    <h2 className="text-5xl font-black text-white mb-8 tracking-widest">PAUSED</h2>
+                    <div className="flex flex-col gap-4 w-72">
+                        <button 
+                            onClick={() => setGameState(GameState.PLAYING)}
+                            className="py-4 bg-cyan-500 text-black font-bold text-xl rounded-lg hover:bg-white hover:scale-105 transition-all shadow-[0_0_20px_rgba(0,210,255,0.4)]"
+                        >
+                            RESUME
+                        </button>
+                        <button 
+                            onClick={() => {
+                                setPreviousState(GameState.PAUSE_MENU);
+                                setGameState(GameState.SETTINGS);
+                            }}
+                            className="py-4 bg-gray-800 text-white font-bold text-xl rounded-lg hover:bg-gray-700 hover:border-cyan-400 border border-gray-600 transition-all"
+                        >
+                            SETTINGS
+                        </button>
+                        <button 
+                            onClick={() => setGameState(GameState.MENU)}
+                            className="py-4 bg-red-900/50 text-red-400 font-bold text-xl rounded-lg hover:bg-red-800 hover:text-white border border-red-900 transition-all"
+                        >
+                            EXIT TO TITLE
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* Main Menu */}
-            {gameState === GameState.MENU && isSystemReady && (
+            {gameState === GameState.MENU && isSystemReady && hasSelectedMode && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-50 animate-in fade-in zoom-in duration-500">
                     <h1 className="text-7xl md:text-9xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-cyan-400 mb-2 drop-shadow-[0_0_30px_rgba(0,210,255,0.6)] tracking-tighter">
                         WARP DRIVE
@@ -174,11 +302,18 @@ const App: React.FC = () => {
                     <h2 className="text-cyan-400 text-xl md:text-2xl tracking-[0.3em] font-light mb-12">ULTIMATE EDITION</h2>
                     
                     <div className="text-gray-500 text-center mb-10 space-y-2">
-                        <p>WASD to Move • Mouse or Hand to Aim</p>
-                        <div className="flex items-center justify-center gap-2 text-cyan-500 font-bold mt-4 bg-cyan-950/30 px-4 py-2 rounded-full border border-cyan-900/50">
-                            <span className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
-                            HAND CONTROLS ACTIVE
-                        </div>
+                        <p>WASD to Move • SHIFT to Boost • Mouse or Hand to Aim</p>
+                        
+                        {settings.controlMode === 'CAMERA' ? (
+                            <div className="flex items-center justify-center gap-2 text-cyan-500 font-bold mt-4 bg-cyan-950/30 px-4 py-2 rounded-full border border-cyan-900/50">
+                                <span className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></span>
+                                HAND CONTROLS ACTIVE
+                            </div>
+                        ) : (
+                            <div className="flex items-center justify-center gap-2 text-gray-400 font-bold mt-4 bg-gray-900 px-4 py-2 rounded-full border border-gray-800">
+                                STANDARD CONTROLS ACTIVE
+                            </div>
+                        )}
                     </div>
 
                     <div className="flex gap-4">
@@ -190,7 +325,10 @@ const App: React.FC = () => {
                         </button>
                         
                         <button 
-                            onClick={() => setGameState(GameState.SETTINGS)}
+                            onClick={() => {
+                                setPreviousState(GameState.MENU);
+                                setGameState(GameState.SETTINGS);
+                            }}
                             className="w-16 h-16 flex items-center justify-center bg-gray-800 border border-gray-600 rounded-full hover:bg-gray-700 hover:border-cyan-400 transition-all"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="white" className="w-8 h-8">
@@ -207,7 +345,7 @@ const App: React.FC = () => {
                 <SettingsMenu 
                     settings={settings} 
                     onUpdate={setSettings} 
-                    onClose={() => setGameState(GameState.MENU)} 
+                    onClose={() => setGameState(previousState)} 
                 />
             )}
 

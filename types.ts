@@ -4,7 +4,8 @@ export enum GameState {
     PLAYING = 'PLAYING',
     PAUSED = 'PAUSED', // For upgrades
     SETTINGS = 'SETTINGS',
-    GAMEOVER = 'GAMEOVER'
+    GAMEOVER = 'GAMEOVER',
+    PAUSE_MENU = 'PAUSE_MENU' // New pause menu state
 }
 
 export interface GameSettings {
@@ -13,6 +14,7 @@ export interface GameSettings {
     showCamera: boolean;
     highPerformance: boolean; // true = 60fps, false = 30fps
     trackingMode: 'index' | 'wrist'; // 'index' (Tip) or 'wrist' (Whole Hand)
+    controlMode: 'KEYBOARD' | 'CAMERA'; // New control mode
 }
 
 export interface Upgrade {
